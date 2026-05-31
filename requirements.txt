@@ -1,0 +1,36 @@
+# ==========================================
+# 1. Database & Core Infrastructure
+# ==========================================
+neo4j==6.2.0
+python-dotenv==1.2.2
+
+# ⚠️ ВИДАЛЕНО З АРХІТЕКТУРНИХ МІРКУВАНЬ: graphdatascience==1.21.0
+# Причини відмови від офіційного клієнта GDS:
+# 1. Dead Dependency: Ми викликаємо алгоритми (PageRank, HNSW) через чистий Cypher
+#    за допомогою базового драйвера neo4j (Push-Down Computations)
+# 2. Dependency Hell: Пакет має жорсткі ліміти (pandas<3.0, pyarrow<24.0),
+#    що блокує використання сучасного Copy-on-Write у Pandas 3.0.3
+# 3. Arrow Flight: Нам не потрібен In-Memory експорт терабайтів графа в Python
+
+# ==========================================
+# 2. ETL & Data Processing
+# ==========================================
+pandas==3.0.3
+pyarrow==24.0.0
+tqdm==4.67.3
+
+# ==========================================
+# 3. BI Dashboard & Graph Visualization
+# ==========================================
+streamlit==1.57.0
+plotly==6.7.0
+pyvis==0.3.2
+
+# ==========================================
+# 4. Machine Learning & GraphRAG
+# ==========================================
+# ⚠️ Ставимо ці пакети НАТИВНО для всіх, ОКРІМ macOS з ЦП Intel
+# На Intel Mac pip проігнорує ці рядки, щоб не було конфлікту з NumPy,
+# а Makefile запустить їх через ізольований Docker-контейнер
+torch==2.12.0 ; sys_platform != 'darwin' or platform_machine != 'x86_64'
+sentence-transformers==5.5.1 ; sys_platform != 'darwin' or platform_machine != 'x86_64'

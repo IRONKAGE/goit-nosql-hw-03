@@ -1,0 +1,199 @@
+# ==============================================================================
+# MLOps & Graph Database Infrastructure (Enterprise / FAANG Standard)
+# Created by IRONKAGE | Task 3: Neo4j Knowledge Graph (MovieLens)
+# ==============================================================================
+
+# ІЗОЛЬОВАНА МЕРЕЖА: Ніколи не використовуємо дефолтний bridge
+networks:
+  movielens_graph_net:
+    driver: bridge
+
+# ------------------------------------------------------------------------------
+# 🛠 БАЗОВИЙ ШАБЛОН ДЛЯ ВСІХ НОД NEO4J (DRY Principle)
+# ------------------------------------------------------------------------------
+x-neo4j-common: &neo4j-common
+  restart: unless-stopped
+  networks:
+    - movielens_graph_net
+  # LOG ROTATION: Захист хосту від розростання логів Java-машини
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "15m"
+      max-file: "4"
+  # SECURITY OPT: Hardening контейнера (заборона root ескалації)
+  security_opt:
+    - no-new-privileges:true
+  healthcheck:
+    # ============================================================================
+    # 🛡️ SRE ADAPTIVE PROBING (Smart Healthcheck)
+    # Якщо DEPLOY_ENV=prod -> Використовуємо важкий, але надійний cypher-shell (Deep Probe)
+    # Якщо DEPLOY_ENV=local (або не вказано) -> Використовуємо легкий wget (Shallow Probe)
+    # ⚠️ ТАЙМІНГИ ЗБЕРЕЖЕНО: 300s start_period критично необхідні для
+    # холодного старту 3-Node Raft Cluster на локальному Docker Desktop
+    # ============================================================================
+    test: ["CMD-SHELL", "if [ '${DEPLOY_ENV:-local}' = 'prod' ]; then cypher-shell -a bolt://127.0.0.1:7687 -u ${NEO4J_LOCAL_USER:-neo4j} -p ${NEO4J_LOCAL_PASS:-secret12345} 'RETURN 1' || exit 1; else wget --no-verbose --tries=1 --spider http://127.0.0.1:7474/ || exit 1; fi"]
+    interval: 15s
+    timeout: 10s
+    retries: 30
+    start_period: 300s
+  # RESOURCE LIMITS: Узгодження лімітів контейнера з архітектурою Java-машини (JVM)
+  # ⚠️ КРИТИЧНО: Ліміт пам'яті контейнера МАЄ БУТИ більшим за суму (Pagecache + Heap_Max) хоча б на 1-2 ГБ для потреб OS та Off-heap пам'яті, інакше ядро Linux вб'є контейнер (OOMKilled)
+  # 💡 Розрахунок пам'яті для графа MovieLens:
+  # - Розмір S (1M ребер): ~100MB на диску. Достатньо 1G Pagecache + 1G Heap. -> Limit: 3G-4G (Поточний безпечний мінімум)
+  # - Розмір M (10M-25M ребер): ~1-2GB на диску. Потребує 3G Pagecache + 4G Heap. -> Limit: 8G-10G
+  # - Розмір L (32M ребер + алгоритми GDS): Алгоритми Graph Data Science (PageRank, Louvain) неймовірно вимогливі до Heap-пам'яті. Потребує 4G-8G Pagecache + 8G-12G Heap. -> Limit: 16G-24G
+  # 💡 Розрахунок CPU:
+  # Хоча базові Cypher-запити часто однопоточні, масове завантаження графа (APOC) та
+  # обчислення GDS масштабуються лінійно. Для швидкого ETL на 32 млн записів краще дати 4.0 або 8.0 ядер
+  deploy:
+    resources:
+      limits:
+        cpus: '4.0'
+        memory: ${NEO4J_MEM_LIMIT:-4G} # ELASTIC PROVISIONING: Безпечне вертикальне масштабування (Scale-Up) через .env без хардкоду
+
+# ------------------------------------------------------------------------------
+# 🛠 ШАБЛОН ДЛЯ ВУЗЛІВ КЛАСТЕРА (Enterprise Core Nodes)
+# ------------------------------------------------------------------------------
+x-neo4j-enterprise: &neo4j-enterprise
+  image: neo4j:2026.04.0-enterprise
+  profiles: ["cluster"]
+
+# ------------------------------------------------------------------------------
+# ⚙️ СПІЛЬНІ ЗМІННІ СЕРЕДОВИЩА
+# ------------------------------------------------------------------------------
+x-neo4j-env: &neo4j-env
+  NEO4J_AUTH: ${NEO4J_LOCAL_USER:-neo4j}/${NEO4J_LOCAL_PASS:-secret12345}
+  NEO4J_PLUGINS: '["apoc", "graph-data-science"]'
+  NEO4J_dbms_security_procedures_unrestricted: "apoc.*,gds.*"
+  NEO4J_dbms_security_procedures_allowlist: "apoc.*,gds.*"
+  # Dynamic Memory Tuning (Оновлено до стандарту Neo4j 2026.x)
+  NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE:-1G}
+  NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP_INIT:-512M}
+  NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP_MAX:-2G}
+
+# ------------------------------------------------------------------------------
+# ⚙️ СПІЛЬНІ ЗМІННІ ДЛЯ КЛАСТЕРА (Enterprise Raft Quorum)
+# ------------------------------------------------------------------------------
+x-neo4j-cluster-env: &neo4j-cluster-env
+  <<: *neo4j-env
+  NEO4J_ACCEPT_LICENSE_AGREEMENT: "yes"
+  # Fault-Tolerant кластер: 3 Core вузли, 0 Read-Only реплік
+  NEO4J_initial_dbms_default__primaries__count: 3
+  NEO4J_initial_dbms_default__secondaries__count: 0
+  # Вузли повинні знати про існування один одного для формування кворуму (Офіційний стандарт Neo4j 2026.04)
+  NEO4J_dbms_cluster_endpoints: "neo4j-core-1:6000,neo4j-core-2:6000,neo4j-core-3:6000"
+  NEO4J_dbms_cluster_minimum__initial__system__primaries__count: 3
+  NEO4J_initial_server_mode__constraint: "PRIMARY"
+  NEO4J_server_cluster_system__database__mode: "PRIMARY"
+
+  # ============================================================================
+  # Розширення пулу потоків Bolt (Для I/O Bottleneck у Docker)
+  # Даємо кластеру більше простору для "дихання" під час холодного старту
+  # ============================================================================
+  NEO4J_server_bolt_thread__pool__max__size: "2000"
+
+services:
+  # ============================================================================
+  # [ПРОФІЛЬ: standalone] NEO4J COMMUNITY (Локальна розробка & Швидкі тести)
+  # ============================================================================
+  neo4j-standalone:
+    <<: *neo4j-common
+    image: neo4j:2026.04.0-community
+    container_name: neo4j_standalone
+    profiles: ["standalone"]
+    ports:
+      - "127.0.0.1:7474:7474" # Browser GUI
+      - "127.0.0.1:7687:7687" # Bolt Protocol
+    environment:
+      <<: *neo4j-env
+    volumes:
+      - neo4j_standalone_data:/data
+      - neo4j_standalone_logs:/logs
+      - ./import:/var/lib/neo4j/import
+
+  # ============================================================================
+  # [ПРОФІЛЬ: cluster] NEO4J ENTERPRISE (High Availability 3-Node Core Cluster)
+  # ============================================================================
+
+  # --- CORE NODE 1 (Raft Leader Candidate) ---
+  neo4j-core-1:
+    <<: [*neo4j-common, *neo4j-enterprise]
+    container_name: neo4j_core_1
+    ports:
+      - "127.0.0.1:7474:7474" # Browser GUI
+      - "127.0.0.1:7687:7687" # Bolt Protocol
+    environment:
+      <<: *neo4j-cluster-env
+      # (Змінна порту 5000 видалена, бо більше не підтримується рушієм Neo4j 2026.04)
+      NEO4J_server_cluster_advertised__address: neo4j-core-1:6000
+      NEO4J_server_cluster_raft_advertised__address: neo4j-core-1:7000
+      # КРИТИЧНО: Рекламуємо localhost для Python-драйвера на хост-машині
+      NEO4J_server_routing_advertised__address: localhost:7687
+    volumes:
+      - neo4j_core1_data:/data
+      - neo4j_core1_logs:/logs
+      - ./import:/var/lib/neo4j/import
+
+  # --- CORE NODE 2 (Raft Follower) ---
+  neo4j-core-2:
+    <<: [*neo4j-common, *neo4j-enterprise]
+    container_name: neo4j_core_2
+    ports:
+      - "127.0.0.1:7475:7474" # Browser GUI (Зміщений порт хоста)
+      - "127.0.0.1:7688:7687" # Bolt Protocol (Зміщений порт хоста)
+    environment:
+      <<: *neo4j-cluster-env
+      NEO4J_server_cluster_advertised__address: neo4j-core-2:6000
+      NEO4J_server_cluster_raft_advertised__address: neo4j-core-2:7000
+      # Зсув зовнішнього порту для правильної маршрутизації
+      NEO4J_server_routing_advertised__address: localhost:7688
+    volumes:
+      - neo4j_core2_data:/data
+      - neo4j_core2_logs:/logs
+      - ./import:/var/lib/neo4j/import
+
+  # --- CORE NODE 3 (Raft Follower) ---
+  neo4j-core-3:
+    <<: [*neo4j-common, *neo4j-enterprise]
+    container_name: neo4j_core_3
+    ports:
+      - "127.0.0.1:7476:7474" # Browser GUI (Зміщений порт хоста)
+      - "127.0.0.1:7689:7687" # Bolt Protocol (Зміщений порт хоста)
+    environment:
+      <<: *neo4j-cluster-env
+      NEO4J_server_cluster_advertised__address: neo4j-core-3:6000
+      NEO4J_server_cluster_raft_advertised__address: neo4j-core-3:7000
+      # Зсув зовнішнього порту для правильної маршрутизації
+      NEO4J_server_routing_advertised__address: localhost:7689
+    volumes:
+      - neo4j_core3_data:/data
+      - neo4j_core3_logs:/logs
+      - ./import:/var/lib/neo4j/import
+
+# ==============================================================================
+# ІМЕНОВАНІ ТОМИ (Explicit Global Naming)
+# Захист від втрати даних при перейменуванні директорій проекту
+# ==============================================================================
+volumes:
+  # --- Standalone Profile ---
+  neo4j_standalone_data:
+    name: ironkage_neo4j_standalone_data
+  neo4j_standalone_logs:
+    name: ironkage_neo4j_standalone_logs
+
+  # --- Cluster Profile ---
+  neo4j_core1_data:
+    name: ironkage_neo4j_core1_data
+  neo4j_core1_logs:
+    name: ironkage_neo4j_core1_logs
+
+  neo4j_core2_data:
+    name: ironkage_neo4j_core2_data
+  neo4j_core2_logs:
+    name: ironkage_neo4j_core2_logs
+
+  neo4j_core3_data:
+    name: ironkage_neo4j_core3_data
+  neo4j_core3_logs:
+    name: ironkage_neo4j_core3_logs
