@@ -4,6 +4,10 @@ import sys
 from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
+import warnings
+
+# Вимикаємо DtypeWarning та ParserWarning, щоб логіка Fallback працювала тихо і не лякала консоль
+warnings.filterwarnings('ignore', category=pd.errors.ParserWarning)
 
 # Імпортуємо наші суміжні інфраструктурні модулі
 import dataset_config
@@ -23,6 +27,40 @@ def ensure_infrastructure():
     """Атомарно створює цільові директорії платформи."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     IMPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+# =========================================================================
+# 🧬 SMART READER: ПАТЕРН GRACEFUL DEGRADATION (DRY)
+# =========================================================================
+def smart_read_csv(file_path, desc_name, **kwargs):
+    """
+    Універсальний DRY-рідер. Автоматично підбирає найшвидший доступний рушій
+    Спроби:
+      1. 'pyarrow' (Найшвидший, але боїться chunksize та екзотичних роздільників)
+      2. 'c'       (Стабільний, підтримує chunksize, але не любить роздільники > 1 символу)
+      3. 'python'  (Повільний, але "з'їсть" будь-який формат)
+    """
+    engines = ["pyarrow", "c", "python"]
+    last_error = None
+
+    for engine in engines:
+        try:
+            attempt_kwargs = kwargs.copy()
+            attempt_kwargs["engine"] = engine
+
+            # Якщо рушій не підтримує комбінацію аргументів (наприклад pyarrow + chunksize),
+            # Pandas миттєво викине Exception саме на цьому етапі:
+            reader = pd.read_csv(file_path, **attempt_kwargs)
+
+            # Якщо код дійшов сюди - рушій сумісний з налаштуваннями!
+            print(f"   ⚡ [{desc_name}] Оптимальний рушій: '{engine}'")
+            return reader
+
+        except Exception as e:
+            last_error = e
+            continue
+
+    # Якщо всі 3 рушії впали (наприклад, файл битий фізично)
+    raise RuntimeError(f"❌ Жоден рушій не зміг прочитати '{desc_name}'. Остання помилка: {last_error}")
 
 # ===================================================
 # 2. ШАР ПЕРЕТВОРЕННЯ ДАНИХ (PANDAS & PYARROW ENGINE)
@@ -46,7 +84,8 @@ def convert_movies(config: dict):
             "Documentary", "Drama", "Fantasy", "Film-Noir", "Horror", "Musical", "Mystery",
             "Romance", "Sci-Fi", "Thriller", "War", "Western"
         ]
-        df = pd.read_csv(raw_file_path, sep=config["sep"], engine="python", header=config["header"], names=retro_columns, encoding=config["encoding"])
+        # Замість хардкоду - делегуємо роботу Smart Reader
+        df = smart_read_csv(raw_file_path, "Movies (Retro)", sep=config["sep"], header=config["header"], names=retro_columns, encoding=config["encoding"])
 
         # Збираємо жанри в один рядок
         genre_cols = retro_columns[5:]
@@ -58,9 +97,8 @@ def convert_movies(config: dict):
         # Відкидаємо зайві 22 колонки, залишаємо тільки потрібні три
         df = df[["movieId", "title", "genres"]]
     else:
-        # Стандартна обробка для сучасних датасетів (1M, 10M, 25M, 32M)
-        engine_type = "python" if config["sep"] == "::" else "pyarrow"
-        df = pd.read_csv(raw_file_path, sep=config["sep"], engine=engine_type, header=config["header"], names=dataset_config.MOVIES_COLUMNS, encoding=config["encoding"])
+        # Стандартна обробка для датасетів з уже готовою колонкою жанрів
+        df = smart_read_csv(raw_file_path, "Movies", sep=config["sep"], header=config["header"], names=dataset_config.MOVIES_COLUMNS, encoding=config["encoding"])
 
     df["title"] = df["title"].astype("string[pyarrow]")
     df["genres"] = df["genres"].astype("string[pyarrow]")
@@ -85,12 +123,11 @@ def convert_users(config: dict):
     if config.get("is_retro"):
         # У 1998 вік і стать були переплутані місцями порівняно з 1M
         retro_user_cols = ["userId", "age", "gender", "occupation", "zipCode"]
-        df = pd.read_csv(raw_file_path, sep=config["sep"], engine="python", header=config["header"], names=retro_user_cols, encoding=config["encoding"])
+        df = smart_read_csv(raw_file_path, "Users (Retro)", sep=config["sep"], header=config["header"], names=retro_user_cols, encoding=config["encoding"])
         # Переставляємо колонки в наш стандартний порядок для бази даних
         df = df[dataset_config.USERS_COLUMNS]
     else:
-        engine_type = "python" if config["sep"] == "::" else "pyarrow"
-        df = pd.read_csv(raw_file_path, sep=config["sep"], engine=engine_type, header=config["header"], names=dataset_config.USERS_COLUMNS, encoding=config["encoding"])
+        df = smart_read_csv(raw_file_path, "Users", sep=config["sep"], header=config["header"], names=dataset_config.USERS_COLUMNS, encoding=config["encoding"])
 
     df["userId"] = pd.to_numeric(df["userId"], downcast="integer")
     df.to_csv(clean_file_path, index=False, encoding="utf-8")
@@ -113,18 +150,17 @@ def convert_ratings(config: dict):
 
     # 👾 РЕТРО-АДАПТЕР: Окремий роздільник для рейтингів
     active_sep = config.get("ratings_sep", config["sep"])
-    engine_type = "python" if active_sep in ["::", "\t"] else "pyarrow"
-
     chunk_size = 1_000_000
     rows_processed = 0
     unique_users = set() # Ініціалізуємо множину для унікальних ID
 
     pd.DataFrame(columns=dataset_config.RATINGS_COLUMNS).to_csv(clean_file_path, index=False, encoding="utf-8")
 
-    chunk_iter = pd.read_csv(
+    # Передаємо генерацію чанків нашому Smart Reader
+    chunk_iter = smart_read_csv(
         raw_file_path,
+        "Ratings (Chunked)",
         sep=active_sep,
-        engine=engine_type,
         header=config["header"],
         names=dataset_config.RATINGS_COLUMNS,
         encoding=config["encoding"],
@@ -132,7 +168,7 @@ def convert_ratings(config: dict):
     )
 
     # Використовуємо target_rows лише для візуалізації прогресу (ETA)
-    with tqdm(total=config["target_rows"], desc="⚙️  Парсинг масиву ratings", unit="рядків", file=sys.stdout) as pbar:
+    with tqdm(total=config["target_rows"], desc="⚙️  Парсинг масиву ratings", unit=" рядків", file=sys.stdout) as pbar:
         for chunk in chunk_iter:
             # Оптимізація пам'яті (Downcasting)
             chunk["userId"] = pd.to_numeric(chunk["userId"], downcast="integer")
@@ -142,7 +178,6 @@ def convert_ratings(config: dict):
 
             # Додаємо унікальні ID з цього чанка в загальну множину
             unique_users.update(chunk["userId"].unique())
-
             chunk.to_csv(clean_file_path, mode="a", header=False, index=False, encoding="utf-8")
 
             rows_processed += len(chunk)
@@ -166,7 +201,6 @@ def convert_ratings(config: dict):
 
         # Гарантуємо правильний порядок колонок
         users_df = users_df[dataset_config.USERS_COLUMNS]
-
         users_df.to_csv(IMPORT_DIR / "users.csv", index=False, encoding="utf-8")
         print(f"✅ Успішно згенеровано users.csv-заглушку для Neo4j!")
 
@@ -174,6 +208,10 @@ def convert_ratings(config: dict):
 # 3. ТОЧКА ВХОДУ (CLI ИНТЕРФЕЙС)
 # ==============================
 if __name__ == "__main__":
+    import logging
+    # Вмикаємо логи для SecureDownloader, щоб нарешті бачити процес завантаження
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
+
     parser = argparse.ArgumentParser(description="MovieLens ETL Платформа (Purist Mode)")
     parser.add_argument(
         "--size",
@@ -193,19 +231,46 @@ if __name__ == "__main__":
     try:
         config = dataset_config.get_config(args.size)
 
-        # Очищення старих даних
-        # Оскільки ми "Purists", ми маємо бути впевнені, що в папці data/ немає залишків іншого датасету
-        old_marker = list(IMPORT_DIR.glob(".dataset_*"))
-        if old_marker and old_marker[0].name != f".dataset_{args.size}":
-            print(f"🧹 Виявлено залишки попереднього датасету ({old_marker[0].name}). Очищення інфраструктури...")
-            for f in DATA_DIR.glob("*"): f.unlink()
-            for f in IMPORT_DIR.glob("*"): f.unlink()
+        # =========================================================================
+        # 🛡️ АБСОЛЮТНИЙ ЗАХИСТ ВІД CACHE POISONING (Розумне очищення)
+        # =========================================================================
+        # Оскільки Makefile чистить import/, ми трекаємо стан безпосередньо в data/
+        state_marker = DATA_DIR / f".state_{args.size}"
+        old_markers = list(DATA_DIR.glob(".state_*"))
+
+        # Якщо ми перемикаємось на інший розмір датасету (маркер не збігається)
+        if not state_marker.exists():
+            old_name = old_markers[0].name.replace('.state_', '') if old_markers else "Відсутній"
+            print(f"🧹 Виявлено зміну датасету ({old_name} ➔ {args.size}).")
+            print("💣 Очищення розпакованих файлів (САМІ АРХІВИ .zip ЗБЕРІГАЮТЬСЯ!)...")
+
+            # 1. Видаляємо старі маркери стану
+            for marker in old_markers:
+                marker.unlink(missing_ok=True)
+
+            # 2. Видаляємо ЛИШЕ розпаковані файли в data/, ігноруючи .zip архіви
+            for ext in ("*.csv", "*.dat", "*.item", "*.data", "*.user"):
+                for f in DATA_DIR.glob(ext):
+                    f.unlink(missing_ok=True)
+
+            # 3. Знищуємо старі результати в папці import/, АЛЕ бережемо .gitkeep
+            for f in IMPORT_DIR.iterdir():
+                if f.is_file() and f.name != ".gitkeep":
+                    f.unlink(missing_ok=True)
+
+            # Фіксуємо новий стан
+            state_marker.touch()
+
+        # 🎯 Динамічне ім'я архіву
+        dynamic_zip_name = f"archive_{args.size}.zip"
 
         downloader = SecureDownloader(
             dataset_path=config["kaggle_path"],
             dataset_url=config["url_fallback"],
             kaggle_direct_url=config["kaggle_direct_url"],
-            data_dir=str(DATA_DIR)
+            data_dir=str(DATA_DIR),
+            zip_name=dynamic_zip_name,
+            expected_size=config.get("expected_zip_bytes") # Передаємо еталонний розмір для перевірки!
         )
 
         downloader.download(target_filename=config["movies_file"])
@@ -219,6 +284,7 @@ if __name__ == "__main__":
         convert_users(config)
         convert_ratings(config)
 
+        # Повертаємо маркер успішності для Makefile
         marker_path = IMPORT_DIR / f".dataset_{args.size}"
         marker_path.touch(exist_ok=True)
 

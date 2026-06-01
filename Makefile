@@ -69,105 +69,113 @@ RESET := \033[0m
 GRAY := \033[90m
 
 # ==============================================================================
-# 🧠 POSITION ARGUMENT PARSER (Магія GNU Make для синтаксису без "=")
+# 🧠 SMART STATE DETECTION (Авто-визначення розміру за наявним маркером)
 # ==============================================================================
-# Визначаємо безпечний дефолтний розмір залежно від середовища (Захист хмари)
-ifeq ($(strip $(ACTIVE_ENV)),cloud)
-	DEFAULT_SIZE := 100K
+# Шукаємо будь-який файл, що починається на .dataset_ у папці import/
+EXISTING_MARKER := $(wildcard import/.dataset_*)
+
+ifneq ($(EXISTING_MARKER),)
+    # Якщо маркер знайдено (напр. import/.dataset_32M), відрізаємо префікс і отримуємо "32M"
+    DEFAULT_SIZE := $(patsubst import/.dataset_%,%,$(word 1,$(EXISTING_MARKER)))
 else
-	DEFAULT_SIZE := 1M
+    # Якщо папка порожня - ставимо базові дефолти
+    ifeq ($(strip $(ACTIVE_ENV)),cloud)
+        DEFAULT_SIZE := 100K
+    else
+        DEFAULT_SIZE := 1M
+    endif
 endif
 
-# Перевіряємо, чи першою командою є db-up або db-load
+FIRST_ARG := $(firstword $(MAKECMDGOALS))
 SUPPORTED_ARGS_COMMANDS := db-up db-load
 
-ifeq ($(filter $(word 1,$(MAKECMDGOALS)),$(SUPPORTED_ARGS_COMMANDS)),$(word 1,$(MAKECMDGOALS)))
+ifneq ($(filter $(FIRST_ARG),$(SUPPORTED_ARGS_COMMANDS)),)
 	# Беремо другий за рахунком аргумент з термінала
-	RAW_SIZE := $(word 2,$(MAKECMDGOALS))
+    RAW_SIZE := $(word 2,$(MAKECMDGOALS))
 	# Якщо другого аргументу немає, ставимо безпечний дефолт
-	SIZE := $(if $(RAW_SIZE),$(RAW_SIZE),$(DEFAULT_SIZE))
+    SIZE := $(if $(RAW_SIZE),$(RAW_SIZE),$(DEFAULT_SIZE))
 	# Перетворюємо у верхній регістр (для 100k -> 100K)
-	SIZE := $(shell echo $(SIZE) | tr '[:lower:]' '[:upper:]')
-
-	# Магія: створюємо пусту ціль для аргументу, щоб Make не лаявся
-	ifneq ($(RAW_SIZE),)
-	    $(eval $(RAW_SIZE):;@:)
-	endif
+    SIZE := $(shell echo $(SIZE) | tr '[:lower:]' '[:upper:]')
 else
-	SIZE := $(DEFAULT_SIZE)
+    ifndef SIZE
+        SIZE := $(DEFAULT_SIZE)
+    endif
 endif
+
+# ГЛОБАЛЬНИЙ ЕКСПОРТ: гарантує, що дочірній $(MAKE) etl побачить правильний SIZE!
+export SIZE
 
 # ==============================================================================
 # 🧠 SMART SIZING (Under the hood Resource Mapping)
 # ==============================================================================
-ifeq ($(SIZE),100K)
-	DB_CLASS = db-s
-	MEM_PER_NODE = 2
-	NEO4J_MEM_LIMIT = 2G
-	NEO4J_PAGECACHE = 512M
-	NEO4J_HEAP_INIT = 256M
-	NEO4J_HEAP_MAX = 1G
+ifneq ($(filter 100K 100K-RETRO,$(SIZE)),)
+    DB_CLASS = db-s
+    MEM_PER_NODE = 2
+    NEO4J_MEM_LIMIT = 2G
+    NEO4J_PAGECACHE = 512M
+    NEO4J_HEAP_INIT = 256M
+    NEO4J_HEAP_MAX = 1G
 else ifeq ($(SIZE),1M)
-	DB_CLASS = db-s
-	MEM_PER_NODE = 4
-	NEO4J_MEM_LIMIT = 4G
-	NEO4J_PAGECACHE = 1G
-	NEO4J_HEAP_INIT = 512M
-	NEO4J_HEAP_MAX = 2G
+    DB_CLASS = db-s
+    MEM_PER_NODE = 4
+    NEO4J_MEM_LIMIT = 4G
+    NEO4J_PAGECACHE = 1G
+    NEO4J_HEAP_INIT = 512M
+    NEO4J_HEAP_MAX = 2G
 else ifeq ($(SIZE),10M)
-	DB_CLASS = db-m
-	MEM_PER_NODE = 10
-	NEO4J_MEM_LIMIT = 10G
-	NEO4J_PAGECACHE = 3G
-	NEO4J_HEAP_INIT = 2G
-	NEO4J_HEAP_MAX = 4G
+    DB_CLASS = db-m
+    MEM_PER_NODE = 10
+    NEO4J_MEM_LIMIT = 10G
+    NEO4J_PAGECACHE = 3G
+    NEO4J_HEAP_INIT = 2G
+    NEO4J_HEAP_MAX = 4G
 else ifeq ($(SIZE),25M)
-	DB_CLASS = db-m
-	MEM_PER_NODE = 16
-	NEO4J_MEM_LIMIT = 16G
-	NEO4J_PAGECACHE = 5G
-	NEO4J_HEAP_INIT = 4G
-	NEO4J_HEAP_MAX = 8G
+    DB_CLASS = db-m
+    MEM_PER_NODE = 16
+    NEO4J_MEM_LIMIT = 16G
+    NEO4J_PAGECACHE = 5G
+    NEO4J_HEAP_INIT = 4G
+    NEO4J_HEAP_MAX = 8G
 else ifeq ($(SIZE),32M)
-	DB_CLASS = db-l
-	MEM_PER_NODE = 30
-	NEO4J_MEM_LIMIT = 30G
-	NEO4J_PAGECACHE = 8G
-	NEO4J_HEAP_INIT = 8G
-	NEO4J_HEAP_MAX = 16G
+    DB_CLASS = db-l
+    MEM_PER_NODE = 22
+    NEO4J_MEM_LIMIT = 22G
+    NEO4J_PAGECACHE = 6G
+    NEO4J_HEAP_INIT = 4G
+    NEO4J_HEAP_MAX = 12G
 else
-	$(error ❌ Невідомий розмір датасету: $(SIZE). Доступні валіди: 100K, 1M, 10M, 25M, 32M)
+    $(error ❌ Невідомий розмір датасету: $(SIZE). Доступні валіди: 100K-RETRO, 100K, 1M, 10M, 25M, 32M)
 endif
 
 # Розрахунок сумарної пам'яті залежно від профілю кластера
 ifeq ($(strip $(COMPOSE_PROFILES)),cluster)
-	REQ_MEM_TOTAL := $(shell expr $(MEM_PER_NODE) \* 3)
+    REQ_MEM_TOTAL := $(shell expr $(MEM_PER_NODE) \* 3)
 else
-	REQ_MEM_TOTAL := $(MEM_PER_NODE)
+    REQ_MEM_TOTAL := $(MEM_PER_NODE)
 endif
 
 # ------------------------------------------------------------------------------
 # 🧠 SMART ROUTING & DYNAMIC HELP: Динамічний вибір бази та тексту
 # ------------------------------------------------------------------------------
 ifeq ($(strip $(ACTIVE_ENV)),cloud)
-	ENV_LABEL := ☁️  Хмара (Neo4j AuraDB)
-	HELP_DB_UP      := $(GRAY)[Пропустити] Aura працює 24/7\n                         ⚠️  УВАГА: Дефолт змінено на 100K через ліміт ~200MB$(RESET)
-	HELP_UI         := Відкрити хмарну веб-консоль (https://console.neo4j.io)
-	HELP_DB_DOWN    := $(GRAY)[Пропустити] Не потрібно для хмари$(RESET)
-	HELP_DB_CLEAN   := $(GRAY)[Пропустити] Очищення хмари робиться через консоль Aura (Reset to blank)$(RESET)
-	HELP_DEEP_CLEAN := ПОВНЕ очищення (Лише Python кеші та імпорти, хмара не зачіпається)
+    ENV_LABEL := ☁️  Хмара (Neo4j AuraDB)
+    HELP_DB_UP 		:= Генерація лише датасету (ETL) для хмарної Aura, яка працює 24/7\\n                         ⚠️  УВАГА: Дефолт змінено на 100K через ліміт ~200MB$(RESET)
+    HELP_UI         := Відкрити хмарну веб-консоль (https://console.neo4j.io)
+    HELP_DB_DOWN    := $(GRAY)[Пропустити] Не потрібно для хмари$(RESET)
+    HELP_DB_CLEAN   := $(GRAY)[Пропустити] Очищення хмари робиться через консоль Aura (Reset to blank)$(RESET)
+    HELP_DEEP_CLEAN := ПОВНЕ очищення (Лише Python кеші та імпорти, хмара не зачіпається)
 else
-	ifeq ($(strip $(COMPOSE_PROFILES)),cluster)
-	    ENV_LABEL := 🖥️  Локально ($(DOCKER_CMD) 3-Node Enterprise Cluster)
-	else
-	    ENV_LABEL := 🖥️  Локально ($(DOCKER_CMD) Community Standalone)
-	endif
+    ifeq ($(strip $(COMPOSE_PROFILES)),cluster)
+        ENV_LABEL := 🖥️  Локально ($(DOCKER_CMD) 3-Node Enterprise Cluster)
+    else
+        ENV_LABEL := 🖥️  Локально ($(DOCKER_CMD) Community Standalone)
+    endif
 
-	HELP_DB_UP      := Підняти інфраструктуру та автоматично підготувати датасет
-	HELP_UI         := Відкрити Neo4j Browser (http://localhost:7474)
-	HELP_DB_DOWN    := Зупинити контейнери (Дані ЗБЕРІГАЮТЬСЯ у volume)
-	HELP_DB_CLEAN   := Очистити базу даних (Знищити Volumes, але залишити CSV)
-	HELP_DEEP_CLEAN := ПОВНЕ очищення (Знищити БД, Volumes, Образи $(DOCKER_CMD) та CSV)
+    HELP_DB_UP      := Підняти інфраструктуру та автоматично підготувати датасет
+    HELP_UI         := Відкрити Neo4j Browser (http://localhost:7474)
+    HELP_DB_DOWN    := Зупинити контейнери (Дані ЗБЕРІГАЮТЬСЯ у volume)
+    HELP_DB_CLEAN   := Очистити базу даних (Знищити Volumes, але залишити CSV)
+    HELP_DEEP_CLEAN := ПОВНЕ очищення (Знищити БД, Volumes, Образи $(DOCKER_CMD) та CSV)
 endif
 
 # ==============================================================================
@@ -191,7 +199,7 @@ endif
 	@echo "--------------------------------------------------------------------------------------------------"
 	@echo "  $(YELLOW)[КРОК 1] Інфраструктура бази даних та Датасет:$(RESET)"
 	@echo "    $(GREEN)make db-up$(RESET)         - $(HELP_DB_UP)"
-	@echo "                         $(GRAY)Синтаксис: make db-up [100K | 1M | 10M | 25M | 32M]$(RESET)"
+	@echo "                         $(GRAY)Синтаксис: make db-up [ 100K-RETRO | 100K | 1M | 10M | 25M | 32M ]$(RESET)"
 	@echo "--------------------------------------------------------------------------------------------------"
 	@echo "  $(YELLOW)[КРОК 2] Покрокова Побудова, AI та Аналітика (Cypher):$(RESET)"
 	@echo "    $(GREEN)make pipeline$(RESET)      - 🚀 АВТОПІЛОТ: Запустити весь пайплайн (Граф + Вектори + Запити)"
@@ -365,23 +373,28 @@ etl:
 	else \
 	    echo "$(YELLOW)⏳ Датасет $(SIZE) відсутній, змінено розмір або файли пошкоджено. Запускаємо генерацію...$(RESET)"; \
 	    rm -f import/.dataset_* import/*.csv; \
-	    $(PYTHON) scripts/convert.py --size $(SIZE); \
+	    $(PYTHON) scripts/convert.py --size $(SIZE) && \
 	    touch import/.dataset_$(SIZE); \
 	fi
+	@# --- Броня від Permission Denied (Docker Volumes) ---
+	@echo "$(CYAN)🛡️  Налаштування безпеки (Permissions) для Docker Mount...$(RESET)"
+	@chmod 755 import || true
+	@chmod 644 import/*.csv import/.dataset_* 2>/dev/null || true
 
 db-up:
 	@if [ "$(strip $(ACTIVE_ENV))" = "cloud" ]; then \
 		echo "$(YELLOW)⚡ Активне середовище - хмара (AuraDB). Локальні ресурси та контейнери ігноруються.$(RESET)"; \
-		if [ "$(SIZE)" != "100K" ]; then \
-			echo "$(RED)⚠️ КРИТИЧНО: Ви готуєте датасет $(SIZE), але безкоштовна AuraDB витримає лише 100K (~200MB)!$(RESET)"; \
+		if [ "$(strip $(AURA_TIER))" = "free" ] && [ "$(SIZE)" != "100K" ] && [ "$(SIZE)" != "100K-RETRO" ]; then \
+			echo "$(RED)❌ КРИТИЧНА ПОМИЛКА: Ви готуєте датасет $(SIZE), але безкоштовна AuraDB витримає лише 100K! Операцію скасовано.$(RESET)"; \
+			exit 1; \
 		else \
-			echo "$(GREEN)✅ Розмір $(SIZE) є безпечним для безкоштовної хмари AuraDB.$(RESET)"; \
+			echo "$(GREEN)✅ Розмір $(SIZE) сумісний з вашим хмарним тарифом ($(strip $(AURA_TIER))).$(RESET)"; \
 		fi; \
-		$(MAKE) etl; \
+		$(MAKE) etl || exit 1; \
 	else \
 		$(MAKE) docker-ensure; \
-		$(MAKE) check-resources; \
-		$(MAKE) etl; \
+		$(MAKE) check-resources || exit 1; \
+		$(MAKE) etl || exit 1; \
 		ACTUAL_PROFILE=$$(cat .dynamic_profile 2>/dev/null | tr -d '[:space:]'); \
 		if [ -z "$$ACTUAL_PROFILE" ]; then ACTUAL_PROFILE="standalone"; fi; \
 		echo "$(CYAN)🐳 Підняття Neo4j (Клас: $(DB_CLASS) | Розмір: $(SIZE) | Профіль: $$ACTUAL_PROFILE)...$(RESET)"; \
@@ -469,13 +482,35 @@ pipeline:
 	@echo "$(YELLOW)👉 Тепер ви можете запустити 'make dashboard' або 'make rag'.$(RESET)"
 
 db-load:
-	@echo "$(CYAN)🧠 (Частина 2) Завантаження графа знань у Neo4j ($(ENV_LABEL)) для розміру $(SIZE)...$(RESET)"
-	@if [ "$(strip $(ACTIVE_ENV))" = "cloud" ] && [ "$(strip $(AURA_TIER))" = "free" ] && [ "$(SIZE)" != "100K" ]; then \
-		echo "$(RED)⛔ КРИТИЧНЕ ПОПЕРЕДЖЕННЯ: Ви намагаєтесь завантажити $(SIZE) у БЕЗКОШТОВНУ хмару!$(RESET)"; \
-		echo "$(RED)База гарантовано впаде (Out of Memory/Quota). Змініть AURA_TIER у .env, якщо у вас платний тариф!$(RESET)"; \
-		echo "$(YELLOW)⏳ Очікування 5 секунд перед суїцидальним завантаженням...$(RESET)"; \
-		sleep 5; \
+	@# --- ПЕРЕВІРКА 0: Захист хмарного гаманця та лімітів AuraDB ---
+	@if [ "$(strip $(ACTIVE_ENV))" = "cloud" ] && [ "$(strip $(AURA_TIER))" = "free" ]; then \
+		if [ "$(SIZE)" != "100K" ] && [ "$(SIZE)" != "100K-RETRO" ]; then \
+			echo "$(RED)❌ КРИТИЧНА ПОМИЛКА: Обмеження тарифу AuraDB Free!$(RESET)"; \
+			echo "$(YELLOW)0) Ви намагаєтесь завантажити $(SIZE), але безкоштовна хмара лусне (ліміт ~200MB).$(RESET)"; \
+			echo "$(GREEN)👉 Виправлення: Змініть ACTIVE_ENV=local або підготуйте 'make db-up 100K'. Якщо купили хмару - змініть AURA_TIER у .env.$(RESET)"; \
+			exit 1; \
+		fi; \
+	fi; \
+	CURRENT_MARKER=$$(ls import/.dataset_* 2>/dev/null | head -n 1 | sed 's/import\/.dataset_//'); \
+	if [ -n "$$CURRENT_MARKER" ] && [ "$$CURRENT_MARKER" != "$(SIZE)" ]; then \
+		echo "$(RED)❌ КРИТИЧНА ПОМИЛКА: Конфлікт версій датасету!$(RESET)"; \
+		echo "$(YELLOW)1) Ви просите завантажити $(SIZE), але в папці import/ підготовлено файли для: $$CURRENT_MARKER.$(RESET)"; \
+		echo "$(GREEN)👉 Виправлення: Виконайте 'make db-up $(SIZE)' для генерації потрібного датасету.$(RESET)"; \
+		exit 1; \
+	fi; \
+	if [ ! -f "import/.dataset_$(SIZE)" ]; then \
+		echo "$(RED)❌ КРИТИЧНА ПОМИЛКА: Дані не підготовлено!$(RESET)"; \
+		echo "$(YELLOW)2) Відсутні файли для бази $(SIZE) (папка import/ порожня або без маркера).$(RESET)"; \
+		echo "$(GREEN)👉 Виправлення: Спочатку виконайте 'make db-up $(SIZE)'$(RESET)"; \
+		exit 1; \
+	fi; \
+	if [ ! -f "import/movies.csv" ] || [ ! -f "import/ratings.csv" ] || [ ! -f "import/users.csv" ]; then \
+		echo "$(RED)❌ КРИТИЧНА ПОМИЛКА: Цілісність даних порушено!$(RESET)"; \
+		echo "$(YELLOW)3) Пошкоджені файли (маркер присутній, але основні .csv файли зникли).$(RESET)"; \
+		echo "$(GREEN)👉 Виправлення: Примусово перегенеруйте файли 'make db-up $(SIZE)'$(RESET)"; \
+		exit 1; \
 	fi
+	@echo "$(CYAN)🧠 (Частина 2) Завантаження графа знань у Neo4j ($(ENV_LABEL)) для розміру $(SIZE)...$(RESET)"
 	$(CYPHER_CMD) queries/part2_load.cypher
 	@echo "$(GREEN)✅ Граф успішно завантажено! Переходьте до генерації векторів або аналітики.$(RESET)"
 
@@ -522,7 +557,7 @@ part6:
 run-queries:
 	@echo "$(CYAN)⚡ АВТОМАТИЗАЦІЯ: Пакетний запуск усіх запитів...$(RESET)"
 	@if [ "$(strip $(ACTIVE_ENV))" = "cloud" ]; then \
-		if [ "$(strip $(AURA_TIER))" = "free" ] && [ "$(SIZE)" != "100K" ]; then \
+		if [ "$(strip $(AURA_TIER))" = "free" ] && [ "$(SIZE)" != "100K" ] && [ "$(SIZE)" != "100K-RETRO" ]; then \
 			echo "$(RED)⛔ КРИТИЧНЕ ПОПЕРЕДЖЕННЯ: Виконувати повний батч на $(SIZE) у БЕЗКОШТОВНІЙ хмарі ЗАБОРОНЕНО!$(RESET)"; \
 			exit 1; \
 		fi; \

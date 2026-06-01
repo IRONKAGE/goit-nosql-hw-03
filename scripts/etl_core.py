@@ -19,7 +19,7 @@ except ImportError:
 
 
 class SecureDownloader:
-    def __init__(self, dataset_path, dataset_url=None, kaggle_direct_url=None, data_dir="data", zip_name="dataset_archive.zip"):
+    def __init__(self, dataset_path, dataset_url=None, kaggle_direct_url=None, data_dir="data", zip_name="dataset_archive.zip", expected_size=None):
         """
         Ініціалізує гібридний завантажувач (Kaggle API + urllib Fallback)
         dataset_path: шлях для API Kaggle (напр. 'veeralakrishna/movielens-25m-dataset')
@@ -31,20 +31,32 @@ class SecureDownloader:
         self.kaggle_direct_url = kaggle_direct_url
         self.data_dir = data_dir
         self.zip_path = os.path.join(self.data_dir, zip_name)
+        self.expected_size = expected_size  # Еталонний розмір для перевірки
 
         if self.data_dir != ".":
             os.makedirs(self.data_dir, exist_ok=True)
 
     def is_valid_zip(self):
-        """Перевірка цілісності ZIP-архіву (захист від HTML-заглушок та битих файлів)"""
+        """Перевірка цілісності ZIP-архіву (захист від HTML-заглушок, підміни розміру та битих файлів)"""
+        # 1. Перевірка наявності та магічних байтів ZIP-формату
         if not os.path.exists(self.zip_path) or not zipfile.is_zipfile(self.zip_path):
             return False
+
+        # 2. Перевірка фізичного розміру (Анти-жартівник / Spoofing Protection)
+        if self.expected_size and os.path.getsize(self.zip_path) != self.expected_size:
+            logger.warning(f"⚠️ Розмір архіву не збігається з еталоном (Факт: {os.path.getsize(self.zip_path)}, Очікувалось: {self.expected_size})!")
+            return False
+
+        # 3. Перевірка цілісності CRC32 (Глибока перевірка на побиті файли)
         try:
             with zipfile.ZipFile(self.zip_path, 'r') as z:
                 if z.testzip() is not None:
+                    logger.warning("⚠️ Архів пошкоджено (не збігається контрольна сума CRC32).")
                     return False
-        except Exception:
+        except Exception as e:
+            logger.warning(f"⚠️ Помилка читання архіву: {e}")
             return False
+
         return True
 
     def _download_via_api(self):
