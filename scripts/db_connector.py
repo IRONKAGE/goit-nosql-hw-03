@@ -5,8 +5,15 @@ from neo4j import GraphDatabase, Driver
 from dotenv import load_dotenv
 
 # 1. Observability (MAAMA Standard)
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-8s | %(message)s")
+# logging.basicConfig(...) - видалено, так як це робить головний скрипт
 logger = logging.getLogger(__name__)
+# Форматування лише для цього логера, якщо він викликається ізольовано (опціонально)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter("%(asctime)s | %(levelname)-8s | %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 load_dotenv()
 

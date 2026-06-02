@@ -503,7 +503,7 @@ CALL gds.graph.drop('userGraph');
 
 ### 🚀 Налаштування оточення (FAANG-ready інфраструктура / MAAMA Level / MANGO evolution)
 
-<img src="./img/0_Neo4j_Emulator.png" width="48%" /> <img src="./img/0_Neo4j_Cloud.png" width="48%" />
+<img src="./img/0_Neo4j_Emulator_Cluster.png" width="48%" /> <img src="./img/0_Neo4j_Cloud_DS.png" width="48%" />
 
 Цей проект — це повноцінна Enterprise-інфраструктура рекомендаційної системи на базі **Neo4j**, що поєднує класичні графові алгоритми (Collaborative Filtering, PageRank, Louvain) із сучасним штучним інтелектом (**GraphRAG / Vector Search**).
 

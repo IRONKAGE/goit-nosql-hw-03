@@ -157,18 +157,62 @@ endif
 # ------------------------------------------------------------------------------
 # 🧠 SMART ROUTING & DYNAMIC HELP: Динамічний вибір бази та тексту
 # ------------------------------------------------------------------------------
+# 1. Дефолтні (Зелені) пункти меню для графових операцій
+CMD_DB_UP       := $(GREEN)make db-up$(RESET)
+HELP_PIPELINE   := $(GREEN)make pipeline$(RESET)      - 🚀 АВТОПІЛОТ: Запустити весь пайплайн (Граф + Вектори + Запити)
+HELP_DB_LOAD    := $(GREEN)make db-load$(RESET)       - (Частина 2) Завантажити граф знань та індекси (LOAD CSV)
+HELP_EMBEDDINGS := $(GREEN)make embeddings$(RESET)    - Згенерувати вектори для GraphRAG 🧬
+HELP_PART3      := $(GREEN)make part3$(RESET)         - (Частина 3) Виконати базові та рекомендаційні запити
+HELP_PART4      := $(GREEN)make part4$(RESET)         - (Частина 4) Знайти супервузли (Supernodes)
+HELP_PART5      := $(GREEN)make part5$(RESET)         - (Частина 5) Запустити Graph Data Science (PageRank, Louvain, Dijkstra)
+HELP_PART6      := $(GREEN)make part6$(RESET)         - (Частина 6) Завантажити вектори у граф та створити HNSW індекс (Бонус 📟)
+HELP_RUN_QUERIES:= $(GREEN)make run-queries$(RESET)   - Запустити всі запити батчем (через Python runner) 🦄
+HELP_DASHBOARD  := $(GREEN)make dashboard$(RESET)     - Запустити інтерактивний BI-дашборд на Streamlit
+HELP_RAG        := $(GREEN)make rag$(RESET)           - Запустити GraphRAG AI Чат-бот 👾
+
 ifeq ($(strip $(ACTIVE_ENV)),cloud)
-    ENV_LABEL := ☁️  Хмара (Neo4j AuraDB)
-    HELP_DB_UP 		:= Генерація лише датасету (ETL) для хмарної Aura, яка працює 24/7\\n                         ⚠️  УВАГА: Дефолт змінено на 100K через ліміт ~200MB$(RESET)
+    # Формуємо красивий лейбл для хмари залежно від тарифу
+    ifeq ($(strip $(AURA_TIER)),free)
+        ENV_LABEL := ☁️  Хмара (AuraDB Free - Ліміт 200MB)
+        HELP_DB_UP := Генерація лише датасету (ETL) для хмарної Aura, яка працює 24/7\\n                         ⚠️  УВАГА: Безкоштовна квота витримає лише профіль 100K та 100K-Retro$(RESET)
+        HELP_PART5 := $(GRAY)make part5$(RESET)         - $(RED)[БЛОКОВАНО] GDS алгоритми потребують тарифу AuraDS [Data Science]$(RESET)
+    else ifeq ($(strip $(AURA_TIER)),professional)
+        ENV_LABEL := ☁️  Хмара (AuraDB Professional - GDS не підтримує)
+        HELP_DB_UP := Генерація лише датасету (ETL) для хмарної Aura, яка працює 24/7\\n                         ⚠️  УВАГА: Доступні всі розміри профілів від 100K-Retro до 32М$(RESET)
+        HELP_PART5 := $(GRAY)make part5$(RESET)         - $(RED)[БЛОКОВАНО] GDS алгоритми потребують тарифу AuraDS [Data Science]$(RESET)
+    else ifeq ($(strip $(AURA_TIER)),ds)
+        ENV_LABEL := ☁️  Хмара (AuraDS [Data Science] - Без обмежень)
+        HELP_DB_UP := Генерація датасету (ETL) для хмарної Aura, яка працює 24/7\\n                         ⚠️  УВАГА: Підтримує всі профілі та увімкнено підтримку GDS$(RESET)
+        HELP_PART5 := $(GREEN)make part5$(RESET)         - (Частина 5) Запустити Graph Data Science (PageRank, Louvain, Dijkstra)
+    else
+        # 🛡️ ПОВНЕ БЛОКУВАННЯ ПРИ НЕВІДОМОМУ ТАРИФІ
+        ENV_LABEL := ☁️  Хмара (AuraDB - $(RED)⚠️  Невідомий тариф...$(YELLOW))$(RESET)
+		CMD_DB_UP := $(GRAY)make db-up$(RESET)
+        HELP_DB_UP := $(RED)[БЛОКОВАНО] Невідомий AURA_TIER у .env! Вкажіть free, professional або ds!$(RESET)
+
+        # Перевизначаємо ВСІ команди на сірі з червоним попередженням
+        ERR_MSG := $(RED)[БЛОКОВАНО] Невідомий тариф хмари! Виправте .env$(RESET)
+        HELP_PIPELINE   := $(GRAY)make pipeline$(RESET)      - $(ERR_MSG)
+        HELP_DB_LOAD    := $(GRAY)make db-load$(RESET)       - $(ERR_MSG)
+        HELP_EMBEDDINGS := $(GRAY)make embeddings$(RESET)    - $(ERR_MSG)
+        HELP_PART3      := $(GRAY)make part3$(RESET)         - $(ERR_MSG)
+        HELP_PART4      := $(GRAY)make part4$(RESET)         - $(ERR_MSG)
+        HELP_PART5      := $(GRAY)make part5$(RESET)         - $(ERR_MSG)
+        HELP_PART6      := $(GRAY)make part6$(RESET)         - $(ERR_MSG)
+        HELP_RUN_QUERIES:= $(GRAY)make run-queries$(RESET)   - $(ERR_MSG)
+        HELP_DASHBOARD  := $(GRAY)make dashboard$(RESET)     - $(ERR_MSG)
+        HELP_RAG        := $(GRAY)make rag$(RESET)           - $(ERR_MSG)
+    endif
+
     HELP_UI         := Відкрити хмарну веб-консоль (https://console.neo4j.io)
     HELP_DB_DOWN    := $(GRAY)[Пропустити] Не потрібно для хмари$(RESET)
     HELP_DB_CLEAN   := $(GRAY)[Пропустити] Очищення хмари робиться через консоль Aura (Reset to blank)$(RESET)
     HELP_DEEP_CLEAN := ПОВНЕ очищення (Лише Python кеші та імпорти, хмара не зачіпається)
 else
     ifeq ($(strip $(COMPOSE_PROFILES)),cluster)
-        ENV_LABEL := 🖥️  Локально ($(DOCKER_CMD) 3-Node Enterprise Cluster)
+        ENV_LABEL := 🖥️  Локально (Neo4j Enterprise 3-Node Cluster: $(DOCKER_CMD))
     else
-        ENV_LABEL := 🖥️  Локально ($(DOCKER_CMD) Community Standalone)
+        ENV_LABEL := 🖥️  Локально (Neo4j Community Standalone: $(DOCKER_CMD))
     endif
 
     HELP_DB_UP      := Підняти інфраструктуру та автоматично підготувати датасет
@@ -186,9 +230,9 @@ CYPHER_CMD := $(PYTHON) scripts/cypher_runner.py --env $(strip $(ACTIVE_ENV)) --
 
 .PHONY: help setup env ensure-python docker-ensure check-resources db-up db-down db-clean ui etl pipeline db-load embeddings part3 part4 part5 part6 run-queries dashboard rag clean ml-clean deep-clean setup-intel
 help:
-	@echo "$(CYAN)=======================================================================================================================$(RESET)"
+	@echo "$(CYAN)==============================================================================================================================$(RESET)"
 	@echo "$(GREEN)🎥 MovieLens Graph Recommendation Platform - Data Engineering Makefile | $(YELLOW)$(ENV_LABEL)$(RESET)"
-	@echo "$(CYAN)=======================================================================================================================$(RESET)"
+	@echo "$(CYAN)==============================================================================================================================$(RESET)"
 	@echo "Послідовність виконання проекту:"
 	@echo "  $(YELLOW)[КРОК 0] Підготовка середовища:$(RESET)"
 	@echo "    $(GREEN)make env$(RESET)           - Створити базовий .env файл (додайте ваші ключі Kaggle/AuraDB)"
@@ -198,27 +242,27 @@ ifdef IS_MAC_INTEL
 endif
 	@echo "--------------------------------------------------------------------------------------------------"
 	@echo "  $(YELLOW)[КРОК 1] Інфраструктура бази даних та Датасет:$(RESET)"
-	@echo "    $(GREEN)make db-up$(RESET)         - $(HELP_DB_UP)"
+	@echo "    $(CMD_DB_UP)         - $(HELP_DB_UP)"
 	@echo "                         $(GRAY)Синтаксис: make db-up [ 100K-RETRO | 100K | 1M | 10M | 25M | 32M ]$(RESET)"
 	@echo "--------------------------------------------------------------------------------------------------"
 	@echo "  $(YELLOW)[КРОК 2] Покрокова Побудова, AI та Аналітика (Cypher):$(RESET)"
-	@echo "    $(GREEN)make pipeline$(RESET)      - 🚀 АВТОПІЛОТ: Запустити весь пайплайн (Граф + Вектори + Запити)"
+	@echo "    $(HELP_PIPELINE)"
 	@echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-	@echo "    $(GREEN)make db-load$(RESET)       - (Частина 2) Завантажити граф знань та індекси (LOAD CSV)"
+	@echo "    $(HELP_DB_LOAD)"
 	@echo "                         $(GRAY)Приклад: 'make db-load 32M' (має збігатися з розміром бази)$(RESET)"
-	@echo "    $(GREEN)make embeddings$(RESET)    - Згенерувати вектори для GraphRAG 🧬"
-	@echo "    $(GREEN)make part3$(RESET)         - (Частина 3) Виконати базові та рекомендаційні запити"
-	@echo "    $(GREEN)make part4$(RESET)         - (Частина 4) Знайти супервузли (Supernodes)"
-	@echo "    $(GREEN)make part5$(RESET)         - (Частина 5) Запустити Graph Data Science (PageRank, Louvain, Dijkstra)"
-	@echo "    $(GREEN)make part6$(RESET)         - (Частина 6) Завантажити вектори у граф та створити HNSW індекс (Бонус 📟)"
+	@echo "    $(HELP_EMBEDDINGS)"
+	@echo "    $(HELP_PART3)"
+	@echo "    $(HELP_PART4)"
+	@echo "    $(HELP_PART5)"
+	@echo "    $(HELP_PART6)"
 	@echo "                         $(GRAY)❗️ Увага: Запит потребує попереднього завантаження векторів GraphRAG$(RESET)"
-	@echo "    $(GREEN)make run-queries$(RESET)   - Запустити всі запити батчем (через Python runner) 🦄"
+	@echo "    $(HELP_RUN_QUERIES)"
 	@echo "                         $(GRAY)❗️ Увага: Запит потребує попереднього завантаження векторів GraphRAG$(RESET)"
 	@echo "--------------------------------------------------------------------------------------------------"
 	@echo "  $(YELLOW)[КРОК 3] Інтерфейси та Візуалізація:$(RESET)"
 	@echo "    $(GREEN)make ui$(RESET)            - $(HELP_UI)"
-	@echo "    $(GREEN)make dashboard$(RESET)     - Запустити інтерактивний BI-дашборд на Streamlit"
-	@echo "    $(GREEN)make rag$(RESET)           - Запустити GraphRAG AI Чат-бот 👾"
+	@echo "    $(HELP_DASHBOARD)"
+	@echo "    $(HELP_RAG)"
 	@echo "--------------------------------------------------------------------------------------------------"
 	@echo "  $(YELLOW)[КРОК 4] Керування та очищення:$(RESET)"
 	@echo "    $(GREEN)make db-down$(RESET)       - $(HELP_DB_DOWN)"
@@ -383,14 +427,21 @@ etl:
 
 db-up:
 	@if [ "$(strip $(ACTIVE_ENV))" = "cloud" ]; then \
-		echo "$(YELLOW)⚡ Активне середовище - хмара (AuraDB). Локальні ресурси та контейнери ігноруються.$(RESET)"; \
+		if [ "$(strip $(AURA_TIER))" != "free" ] && [ "$(strip $(AURA_TIER))" != "professional" ] && [ "$(strip $(AURA_TIER))" != "ds" ]; then \
+			echo "$(RED)❌ КРИТИЧНА ПОМИЛКА: Невідомий тариф AURA_TIER='$(strip $(AURA_TIER))'!$(RESET)"; \
+			echo "$(YELLOW)👉 Виправлення: Вкажіть у .env одне зі значень: free, professional, ds.$(RESET)"; \
+			exit 1; \
+		fi; \
+		echo "$(YELLOW)⚡ Активне середовище - хмара ($(ENV_LABEL)). Локальні ресурси та контейнери ігноруються.$(RESET)"; \
 		if [ "$(strip $(AURA_TIER))" = "free" ] && [ "$(SIZE)" != "100K" ] && [ "$(SIZE)" != "100K-RETRO" ]; then \
-			echo "$(RED)❌ КРИТИЧНА ПОМИЛКА: Ви готуєте датасет $(SIZE), але безкоштовна AuraDB витримає лише 100K! Операцію скасовано.$(RESET)"; \
+			echo "$(RED)❌ КРИТИЧНА ПОМИЛКА: Ви готуєте датасет $(SIZE), але безкоштовна квота витримає лише 100K! Операцію скасовано.$(RESET)"; \
 			exit 1; \
 		else \
 			echo "$(GREEN)✅ Розмір $(SIZE) сумісний з вашим хмарним тарифом ($(strip $(AURA_TIER))).$(RESET)"; \
 		fi; \
-		$(MAKE) etl || exit 1; \
+		echo "$(CYAN)🔄 Запуск підготовки даних для хмари...$(RESET)"; \
+		$(PYTHON) scripts/convert.py --size $(SIZE) || exit 1; \
+		echo "$(GREEN)✅ Дані для хмари готові!$(RESET)"; \
 	else \
 		$(MAKE) docker-ensure; \
 		$(MAKE) check-resources || exit 1; \
@@ -483,8 +534,13 @@ pipeline:
 
 db-load:
 	@# --- ПЕРЕВІРКА 0: Захист хмарного гаманця та лімітів AuraDB ---
-	@if [ "$(strip $(ACTIVE_ENV))" = "cloud" ] && [ "$(strip $(AURA_TIER))" = "free" ]; then \
-		if [ "$(SIZE)" != "100K" ] && [ "$(SIZE)" != "100K-RETRO" ]; then \
+	@if [ "$(strip $(ACTIVE_ENV))" = "cloud" ]; then \
+		if [ "$(strip $(AURA_TIER))" != "free" ] && [ "$(strip $(AURA_TIER))" != "professional" ] && [ "$(strip $(AURA_TIER))" != "ds" ]; then \
+			echo "$(RED)❌ КРИТИЧНА ПОМИЛКА: Невідомий тариф AURA_TIER='$(strip $(AURA_TIER))'!$(RESET)"; \
+			echo "$(YELLOW)👉 Виправлення: Вкажіть у .env одне зі значень: free, professional, ds.$(RESET)"; \
+			exit 1; \
+		fi; \
+		if [ "$(strip $(AURA_TIER))" = "free" ] && [ "$(SIZE)" != "100K" ] && [ "$(SIZE)" != "100K-RETRO" ]; then \
 			echo "$(RED)❌ КРИТИЧНА ПОМИЛКА: Обмеження тарифу AuraDB Free!$(RESET)"; \
 			echo "$(YELLOW)0) Ви намагаєтесь завантажити $(SIZE), але безкоштовна хмара лусне (ліміт ~200MB).$(RESET)"; \
 			echo "$(GREEN)👉 Виправлення: Змініть ACTIVE_ENV=local або підготуйте 'make db-up 100K'. Якщо купили хмару - змініть AURA_TIER у .env.$(RESET)"; \
@@ -541,9 +597,9 @@ part4:
 part5:
 	@echo "$(CYAN)🧬 (Частина 5) Запуск алгоритмів Graph Data Science (GDS)...$(RESET)"
 	@if [ "$(strip $(ACTIVE_ENV))" = "cloud" ] && [ "$(strip $(AURA_TIER))" != "ds" ]; then \
-		echo "$(RED)⛔ КРИТИЧНО: Ваш тариф хмари ($(AURA_TIER)) не підтримує плагін GDS!$(RESET)"; \
-		echo "$(YELLOW)💡 GDS доступний лише локально (Docker) або у дорогому тарифі Neo4j AuraDS (AURA_TIER=ds).$(RESET)"; \
-		echo "$(YELLOW)⏩ Зупинка таргету...$(RESET)"; \
+		echo "$(RED)⛔ КРИТИЧНО: Ваш поточний тариф хмари ($(strip $(AURA_TIER))) не підтримує плагін GDS!$(RESET)"; \
+		echo "$(YELLOW)💡 Алгоритми GDS (PageRank, Louvain) вимагають спеціалізованих обчислень.$(RESET)"; \
+		echo "$(GREEN)👉 Доступно ТІЛЬКИ локально (Docker) АБО у хмарному тарифі 'ds' (AuraDS).$(RESET)"; \
 		exit 1; \
 	fi
 	$(CYPHER_CMD) queries/part5_gds.cypher
@@ -557,12 +613,17 @@ part6:
 run-queries:
 	@echo "$(CYAN)⚡ АВТОМАТИЗАЦІЯ: Пакетний запуск усіх запитів...$(RESET)"
 	@if [ "$(strip $(ACTIVE_ENV))" = "cloud" ]; then \
-		if [ "$(strip $(AURA_TIER))" = "free" ] && [ "$(SIZE)" != "100K" ] && [ "$(SIZE)" != "100K-RETRO" ]; then \
-			echo "$(RED)⛔ КРИТИЧНЕ ПОПЕРЕДЖЕННЯ: Виконувати повний батч на $(SIZE) у БЕЗКОШТОВНІЙ хмарі ЗАБОРОНЕНО!$(RESET)"; \
+		if [ "$(strip $(AURA_TIER))" != "free" ] && [ "$(strip $(AURA_TIER))" != "professional" ] && [ "$(strip $(AURA_TIER))" != "ds" ]; then \
+			echo "$(RED)❌ КРИТИЧНА ПОМИЛКА: Невідомий тариф AURA_TIER='$(strip $(AURA_TIER))'!$(RESET)"; \
+			echo "$(YELLOW)👉 Виправлення: Вкажіть у .env одне зі значень: free, professional, ds.$(RESET)"; \
 			exit 1; \
 		fi; \
-		echo "$(YELLOW)⚠️  УВАГА: Ви в хмарному режимі (AuraDB - Тариф: $(AURA_TIER)).$(RESET)"; \
-		echo "$(YELLOW)Переконайтеся, що всі CSV-файли (включно з векторами) вже завантажено до: $(NEO4J_DATA_BASE_URL)$(RESET)"; \
+		echo "$(YELLOW)⚠️  УВАГА: Ви в хмарному режимі ($(ENV_LABEL)).$(RESET)"; \
+		if [ "$(strip $(AURA_TIER))" = "free" ] && [ "$(SIZE)" != "100K" ] && [ "$(SIZE)" != "100K-RETRO" ]; then \
+			echo "$(RED)⛔ КРИТИЧНЕ ПОПЕРЕДЖЕННЯ: Виконувати повний батч на $(SIZE) у БЕЗКОШТОВНІЙ хмарі ЗАБОРОНЕНО (ризик Out of Memory)!$(RESET)"; \
+			exit 1; \
+		fi; \
+		echo "$(YELLOW)Переконайтеся, що всі CSV-файли (включно з векторами) вже завантажено до вашого хмарного сховища: $(NEO4J_DATA_BASE_URL)$(RESET)"; \
 		echo "$(CYAN)⏳ Запуск через 3 секунди... (Натисніть Ctrl+C для скасування)$(RESET)"; \
 		sleep 3; \
 	fi

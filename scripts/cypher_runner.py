@@ -8,6 +8,7 @@ import itertools
 import logging
 from pathlib import Path
 from db_connector import Neo4jConnectionFactory # Імпортуємо Фабрику
+
 # =========================================================================
 # Вимикаємо інформаційне сміття від драйвера Neo4j
 # Залишаємо тільки критичні помилки та ворнінги, щоб зберегти CLI чистим
@@ -20,29 +21,35 @@ class QuerySpinner:
         self.message = message
         self.is_running = False
         self.spinner_thread = None
+        self._lock = threading.Lock() # Lock для безпечного доступу до sys.stdout
 
     def spin(self):
         spinner = itertools.cycle(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'])
         start_time = time.time()
         while self.is_running:
             elapsed = time.time() - start_time
-            # \r повертає каретку на початок рядка, перезаписуючи його
-            sys.stdout.write(f"\r      {next(spinner)} {self.message} [{elapsed:.1f}s]")
-            sys.stdout.flush()
+            with self._lock:
+                # \r повертає каретку на початок рядка, перезаписуючи його
+                sys.stdout.write(f"\r      {next(spinner)} {self.message} [{elapsed:.1f}s]")
+                sys.stdout.flush()
             time.sleep(0.1)
-        # Очищення рядка після завершення
-        sys.stdout.write('\r' + ' ' * 60 + '\r')
-        sys.stdout.flush()
 
     def __enter__(self):
         self.is_running = True
-        self.spinner_thread = threading.Thread(target=self.spin)
+        # daemon=True. Якщо головний потік падає, цей потік помре автоматично
+        self.spinner_thread = threading.Thread(target=self.spin, daemon=True)
         self.spinner_thread.start()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.is_running = False
-        self.spinner_thread.join()
+        if self.spinner_thread:
+            self.spinner_thread.join()
+
+        with self._lock: # 🛡️ FIX
+            # Очищення рядка після завершення
+            sys.stdout.write('\r' + ' ' * 60 + '\r')
+            sys.stdout.flush()
 
 class CypherRunner:
     def __init__(self, env="local"):
@@ -203,42 +210,47 @@ if __name__ == "__main__":
 
     runner = CypherRunner(env=args.env)
 
-    if args.file:
-        # 🎯 Режим одиничного запуску (для конкретного make-таргету)
-        runner.run_script(args.file)
-    else:
-        # 🔄 Режим Batch (Explicit DAG / Жорсткий порядок)
-        # 🗺️ Декларативний маніфест пайплайну
-        pipeline_manifest = [
-            {"path": "queries/part2_load.cypher",       "envs": ["local", "cloud"], "desc": "Імпорт даних (ETL)"},
-            {"path": "queries/part3_queries.cypher",    "envs": ["local", "cloud"], "desc": "Базова аналітика"},
-            {"path": "queries/part4_supernodes.cypher", "envs": ["local", "cloud"], "desc": "Ізоляція супервузлів"},
-            {"path": "queries/part5_gds.cypher",        "envs": ["local", "cloud"], "desc": "Graph Data Science (Louvain, PageRank)"},
-            {"path": "queries/part6_graphrag.cypher",   "envs": ["local", "cloud"], "desc": "GraphRAG Векторизація"}
-        ]
+    # Гарантоване закриття з'єднань
+    try:
+        if args.file:
+            # 🎯 Режим одиничного запуску (для конкретного make-таргету)
+            runner.run_script(args.file)
+        else:
+            # 🔄 Режим Batch (Explicit DAG / Жорсткий порядок)
+            # 🗺️ Декларативний маніфест пайплайну
+            pipeline_manifest = [
+                {"path": "queries/part2_load.cypher",       "envs": ["local", "cloud"], "desc": "Імпорт даних (ETL)"},
+                {"path": "queries/part3_queries.cypher",    "envs": ["local", "cloud"], "desc": "Базова аналітика"},
+                {"path": "queries/part4_supernodes.cypher", "envs": ["local", "cloud"], "desc": "Ізоляція супервузлів"},
+                {"path": "queries/part5_gds.cypher",        "envs": ["local", "cloud"], "desc": "Graph Data Science (Louvain, PageRank)"},
+                {"path": "queries/part6_graphrag.cypher",   "envs": ["local", "cloud"], "desc": "GraphRAG Векторизація"}
+            ]
 
-        scripts_to_run = []
-        aura_tier = os.getenv("AURA_TIER", "free").strip().lower()
+            scripts_to_run = []
+            aura_tier = os.getenv("AURA_TIER", "free").strip().lower()
 
-        print(f"\n🗺️  Аналіз маніфесту пайплайну для середовища: [{args.env.upper()}] (Tier: {aura_tier.upper()})")
+            print(f"\n🗺️  Аналіз маніфесту пайплайну для середовища: [{args.env.upper()}] (Tier: {aura_tier.upper()})")
 
-        # Універсальний фільтр маршрутизації (Dynamic Pruning)
-        for step in pipeline_manifest:
-            # 1. Перевірка базового середовища
-            if args.env not in step["envs"]:
-                print(f"  ⚠️  [ПРОПУСК] {step['path']} — Вимкнено для {args.env.upper()} ({step['desc']})")
-                continue
+            # Універсальний фільтр маршрутизації (Dynamic Pruning)
+            for step in pipeline_manifest:
+                # 1. Перевірка базового середовища
+                if args.env not in step["envs"]:
+                    print(f"  ⚠️  [ПРОПУСК] {step['path']} — Вимкнено для {args.env.upper()} ({step['desc']})")
+                    continue
 
-            # 2. 🛡️ VIP-захист для алгоритмів GDS у хмарі
-            if args.env == "cloud" and "part5_gds" in step["path"] and aura_tier != "ds":
-                print(f"  ⚠️  [ПРОПУСК] {step['path']} — Вимкнено для Aura {aura_tier.upper()}. Потрібен тариф AuraDS.")
-                continue
+                # 2. 🛡️ VIP-захист для алгоритмів GDS у хмарі
+                if args.env == "cloud" and "part5_gds" in step["path"] and aura_tier != "ds":
+                    print(f"  ⚠️  [ПРОПУСК] {step['path']} — Вимкнено для Aura {aura_tier.upper()}. Потрібен тариф AuraDS.")
+                    continue
 
-            scripts_to_run.append(step["path"])
+                scripts_to_run.append(step["path"])
 
-        print(f"\n📋 Запуск {len(scripts_to_run)} скриптів за узгодженим сценарієм...")
-        for script in scripts_to_run:
-            runner.run_script(script)
+            print(f"\n📋 Запуск {len(scripts_to_run)} скриптів за узгодженим сценарієм...")
+            for script in scripts_to_run:
+                runner.run_script(script)
 
-    runner.close()
-    print("\n🎉 Усі графові операції успішно завершено!")
+        print("\n🎉 Усі графові операції успішно завершено!")
+
+    finally:
+        # Гарантоване закриття пулу з'єднань, навіть при помилках чи перериваннях
+        runner.close()
